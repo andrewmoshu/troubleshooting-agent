@@ -111,7 +111,7 @@ Concise bullet points:"""
     
     try:
         # Use ChatOpenAI for consistency if available and configured
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2, openai_api_key=os.getenv("OPENAI_API_KEY"))
+        llm = ChatOpenAI(model="gpt-4.1", temperature=0.2, openai_api_key=os.getenv("OPENAI_API_KEY"))
         response = llm.invoke(prompt)
         summary = response.content.strip() if hasattr(response, 'content') else str(response).strip()
         if not isinstance(summary, str) or not summary:
@@ -123,7 +123,7 @@ Concise bullet points:"""
         # Fallback using the direct client (ensure main_openai_client is initialized)
         try:
             response_direct = main_openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-4.1",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=max_tokens,
                 temperature=0.2,
@@ -207,67 +207,70 @@ if not os.getenv("GOOGLE_API_KEY") or not os.getenv("GOOGLE_CSE_ID"):
 else:
     google_search_api = GoogleSearchAPIWrapper(k=5) # Get top 5 results
 
-    def google_search_with_metadata_and_content(query: str) -> str:
+    def google_search_with_metadata_and_content(query: str) -> List[Dict[str, str]]:
         """
         Performs a Google Search, then fetches and summarizes the content of the top results relevant to the query.
-        Returns a formatted string including titles, links, snippets, and summarized content.
+        Returns a list of dictionaries, each containing: title, link, snippet, and fetched_content_summary.
         """
         print(f"--- Tool: google_search_with_metadata_and_content, Query: {query} ---")
-        final_output_parts = []
-        MAX_RESULTS_TO_FETCH = 3 # Fetch content for top 3 results
+        processed_results: List[Dict[str, str]] = []
+        MAX_RESULTS_TO_FETCH = 3 
         SUMMARY_TRIGGER_LENGTH = 8000
 
         try:
             # 1. Get SERP results
             serp_results = google_search_api.results(query, num_results=5)
             if not serp_results:
-                return "No search results found via Google."
+                # Return a list with a single item indicating no results, to maintain type consistency
+                return [{"title": "No Results", "link": "", "snippet": "No search results found via Google.", "fetched_content_summary": ""}]
 
-            final_output_parts.append(f"Google Search Results for '{query}':\n")
-            
-            # 2. Fetch and summarize content for top N results
+            # Process top N results for content fetching
             links_to_process = [(r.get('link'), r.get('title', 'N/A'), r.get('snippet', 'N/A')) for r in serp_results[:MAX_RESULTS_TO_FETCH] if r.get('link')]
             
             for i, (link, title, snippet) in enumerate(links_to_process):
                 print(f"Processing result {i+1}/{len(links_to_process)}: {link}")
-                final_output_parts.append(f"Result {i+1}:\nTitle: {title}\nLink: {link}\nSnippet: {snippet}")
                 
                 content_summary = "[Content not fetched or processed]"
-                # Check cache first
                 if link in _summary_cache_data:
                     print(f"Using cached summary for {link}.")
                     content_summary = _summary_cache_data[link]
                 else:
-                    # Fetch full text
                     extracted_text = extract_main_text(link, logger=_default_logger)
                     if extracted_text and not extracted_text.startswith("["):
-                        # Summarize if long
                         if len(extracted_text) > SUMMARY_TRIGGER_LENGTH:
                             print(f"Text from {link} is large ({len(extracted_text)} chars). Summarizing with focus: '{query}'...")
                             content_summary = chunked_summarize(extracted_text, _default_logger, focus=query)
                         else:
-                            content_summary = extracted_text # Use extracted text directly if short
+                            content_summary = extracted_text
                         
-                        # Cache the result
                         _summary_cache_data[link] = content_summary
-                        _save_summary_cache() # Save cache after successful processing
+                        _save_summary_cache()
                     else:
-                        content_summary = extracted_text # Keep error message like "[Could not fetch...]"
+                        content_summary = extracted_text 
                 
-                final_output_parts.append(f"Fetched Content Summary:\n{content_summary}\n---")
+                processed_results.append({
+                    "title": title,
+                    "link": link,
+                    "snippet": snippet,
+                    "fetched_content_summary": content_summary
+                })
             
-            # Include remaining SERP results (without fetched content)
-            if len(serp_results) > MAX_RESULTS_TO_FETCH:
-                 final_output_parts.append("\nOther Search Results (Snippets Only):\n")
-                 for i, r in enumerate(serp_results[MAX_RESULTS_TO_FETCH:]):
-                     final_output_parts.append(f"Result {i+MAX_RESULTS_TO_FETCH+1}:\nTitle: {r.get('title', 'N/A')}\nLink: {r.get('link', 'N/A')}\nSnippet: {r.get('snippet', 'N/A')}\n---")
+            # Add remaining SERP results (without fetched content)
+            for r in serp_results[MAX_RESULTS_TO_FETCH:]:
+                processed_results.append({
+                    "title": r.get('title', 'N/A'),
+                    "link": r.get('link', 'N/A'),
+                    "snippet": r.get('snippet', 'N/A'),
+                    "fetched_content_summary": "[Content not fetched for this result]"
+                })
 
-            return "\n".join(final_output_parts)
+            return processed_results
 
         except Exception as e:
             print(f"Error during enhanced Google search: {str(e)}")
-            import traceback; traceback.print_exc() # Print full traceback for debugging
-            return f"Error during enhanced Google search: {str(e)}"
+            import traceback; traceback.print_exc()
+            # Return a list with an error entry
+            return [{"title": "Error", "link": "", "snippet": f"Error during enhanced Google search: {str(e)}", "fetched_content_summary": ""}]
 
     google_search_tool = Tool(
         name="web_search",
@@ -377,12 +380,12 @@ all_tools = [google_search_tool, ask_user_tool, update_knowledge_log_tool, query
 # You can also use other models like Anthropic's Claude
 # For example: model = ChatAnthropic(model="claude-3-haiku-20240307")
 # model_name = "anthropic/claude-3-haiku-20240307" # Requires ANTHROPIC_API_KEY
-model_name = os.getenv("OPENAI_MODEL_NAME", "gpt-4o")
+model_name = os.getenv("OPENAI_MODEL_NAME", "gpt-4.1")
 llm = ChatOpenAI(model=model_name, temperature=0.4)
 
 
 # --- 3. Define Prompt ---
-TROUBLESHOOTING_PROMPT = """You are an expert troubleshooting assistant. Your goal is to help users diagnose and solve technical problems.
+TROUBLESHOOTING_PROMPT = """You are an expert troubleshooting assistant called Daisy. Your goal is to help users diagnose and solve technical problems.
 
 Follow these steps:
 1.  **Understand the Problem**: Carefully analyze the user's description of the issue. If crucial details are missing, use the `ask_user_for_clarification` tool to ask specific questions. Record the initial problem and user clarifications using `update_knowledge_log`.
